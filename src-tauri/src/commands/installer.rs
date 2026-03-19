@@ -22,8 +22,6 @@ pub struct EnvironmentStatus {
     pub ai_configured: bool,
     /// 是否已配置 Tuzi
     pub tuzi_configured: bool,
-    /// 当前激活的 Tuzi 分组
-    pub tuzi_active_group: Option<String>,
     /// 是否全部就绪
     pub ready: bool,
     /// 操作系统
@@ -77,10 +75,9 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
 
     let env_path = platform::get_env_file_path();
     let config_path = platform::get_config_file_path();
-    let tuzi_active_group = crate::utils::file::read_env_value(&env_path, "TUZI_GROUP");
-    let tuzi_model = crate::utils::file::read_env_value(&env_path, "TUZI_MODEL");
-    let tuzi_key = crate::utils::file::read_env_value(&env_path, "TUZI_API_KEY");
-    let tuzi_configured = tuzi_active_group.is_some() && tuzi_model.is_some() && tuzi_key.is_some();
+    let tuzi_configured =
+        is_tuzi_group_complete(&env_path, "TUZI_CLAUDE_CODE_API_KEY", "TUZI_CLAUDE_CODE_MODEL")
+            || is_tuzi_group_complete(&env_path, "TUZI_CODEX_API_KEY", "TUZI_CODEX_MODEL");
 
     let ai_configured = if let Ok(content) = std::fs::read_to_string(&config_path) {
         serde_json::from_str::<serde_json::Value>(&content)
@@ -109,10 +106,14 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
         config_dir_exists,
         ai_configured,
         tuzi_configured,
-        tuzi_active_group,
         ready,
         os,
     })
+}
+
+fn is_tuzi_group_complete(env_path: &str, key_name: &str, model_name: &str) -> bool {
+    crate::utils::file::read_env_value(env_path, key_name).is_some()
+        && crate::utils::file::read_env_value(env_path, model_name).is_some()
 }
 
 /// 获取 Node.js 版本

@@ -51,11 +51,41 @@ pub fn read_env_value(env_file: &str, key: &str) -> Option<String> {
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with(&format!("export {}=", key)) {
-            let value = line
-                .trim_start_matches(&format!("export {}=", key))
-                .trim_matches('"')
-                .trim_matches('\'');
-            return Some(value.to_string());
+            let raw_value = line.trim_start_matches(&format!("export {}=", key)).trim();
+            let value = if raw_value.len() >= 2
+                && ((raw_value.starts_with('"') && raw_value.ends_with('"'))
+                    || (raw_value.starts_with('\'') && raw_value.ends_with('\'')))
+            {
+                &raw_value[1..raw_value.len() - 1]
+            } else {
+                raw_value
+            };
+
+            let mut unescaped = String::new();
+            let mut chars = value.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '\\' {
+                    if let Some(next) = chars.next() {
+                        match next {
+                            '\\' => unescaped.push('\\'),
+                            '"' => unescaped.push('"'),
+                            '\'' => unescaped.push('\''),
+                            'n' => unescaped.push('\n'),
+                            't' => unescaped.push('\t'),
+                            other => {
+                                unescaped.push('\\');
+                                unescaped.push(other);
+                            }
+                        }
+                    } else {
+                        unescaped.push('\\');
+                    }
+                } else {
+                    unescaped.push(ch);
+                }
+            }
+
+            return Some(unescaped);
         }
     }
     
