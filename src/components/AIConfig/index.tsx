@@ -24,9 +24,36 @@ import {
 import clsx from 'clsx';
 import { aiLogger } from '../../lib/logger';
 import { api, TuziConfigOverview, TuziGroup } from '../../lib/tauri';
-import { useTuziModelSelection } from '../../hooks/useTuziModelSelection';
+import { getFixedTuziModels, useTuziModelSelection } from '../../hooks/useTuziModelSelection';
 
-const TUZI_PROVIDER_NAMES = new Set(['tuzi-claude-code', 'tuzi-codex']);
+const QUICK_ACCESS_PROVIDER_NAMES = new Set(['tuzi-claude-code', 'tuzi-codex', 'gac-claude', 'gac-codex']);
+const QUICK_ACCESS_GROUPS: TuziGroup[] = ['claude-code', 'codex', 'gaccode'];
+
+function getGroupLabel(group: TuziGroup): string {
+  switch (group) {
+    case 'claude-code':
+      return 'Claude-Code';
+    case 'codex':
+      return 'Codex';
+    case 'gaccode':
+      return 'GACCode';
+  }
+}
+
+function getGroupIcon(group: TuziGroup): string {
+  switch (group) {
+    case 'claude-code':
+      return '🧠';
+    case 'codex':
+      return '⚡';
+    case 'gaccode':
+      return '🧩';
+  }
+}
+
+function isFullModelRef(model: string): boolean {
+  return model.includes('/');
+}
 
 // ============ 类型定义 ============
 
@@ -816,6 +843,7 @@ function ProviderCard({ provider, officialProviders, onOpenActions, onRefresh, o
                         models: provider.models.map(model => ({
                           id: model.id,
                           fullId: model.full_id,
+                          providerId: provider.name,
                           isPrimary: model.is_primary,
                         })),
                       });
@@ -857,7 +885,7 @@ type ModelActionTarget = {
   kind: 'provider' | 'tuzi-group';
   providerId: string;
   displayName: string;
-  models: Array<{ id: string; fullId: string; isPrimary: boolean }>;
+  models: Array<{ id: string; fullId: string; providerId: string; isPrimary: boolean }>;
   group?: TuziGroup;
 };
 
@@ -872,7 +900,7 @@ interface TuziGroupCardProps {
 function TuziGroupCard({ group, groupConfig, isInUse, onConfigure, onOpenActions }: TuziGroupCardProps) {
   const [expanded, setExpanded] = useState(true);
   const configured = !!groupConfig?.configured;
-  const displayName = group === 'claude-code' ? 'Claude-Code' : 'Codex';
+  const displayName = getGroupLabel(group);
   const models = groupConfig?.models || [];
 
   return (
@@ -886,7 +914,7 @@ function TuziGroupCard({ group, groupConfig, isInUse, onConfigure, onOpenActions
         className="flex items-center gap-3 p-4 cursor-pointer hover:bg-dark-600/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-xl">{group === 'claude-code' ? '🧠' : '⚡'}</span>
+        <span className="text-xl">{getGroupIcon(group)}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="font-medium text-white">{displayName}</h3>
@@ -936,6 +964,8 @@ function TuziGroupCard({ group, groupConfig, isInUse, onConfigure, onOpenActions
                   <div className="space-y-2">
                     {models.map((model) => {
                       const isPrimary = groupConfig?.primary_model === model;
+                      const fullId = isFullModelRef(model) ? model : `${groupConfig?.provider_id}/${model}`;
+                      const displayModel = isFullModelRef(model) ? model.split('/').slice(1).join('/') : model;
                       return (
                         <div
                           key={model}
@@ -950,14 +980,14 @@ function TuziGroupCard({ group, groupConfig, isInUse, onConfigure, onOpenActions
                             <Cpu size={16} className={isPrimary ? 'text-claw-400' : 'text-gray-500'} />
                             <div>
                               <p className={clsx('text-sm font-medium', isPrimary ? 'text-white' : 'text-gray-300')}>
-                                {model}
+                                {displayModel}
                                 {isPrimary && (
                                   <span className="ml-2 text-xs text-claw-400">
                                     <Star size={12} className="inline -mt-0.5" /> 主模型
                                   </span>
                                 )}
                               </p>
-                              <p className="text-xs text-gray-500">{groupConfig?.provider_id}/{model}</p>
+                              <p className="text-xs text-gray-500">{fullId}</p>
                             </div>
                           </div>
                         </div>
@@ -974,8 +1004,11 @@ function TuziGroupCard({ group, groupConfig, isInUse, onConfigure, onOpenActions
                           providerId: groupConfig.provider_id,
                           displayName,
                           models: models.map((model) => ({
-                            id: model,
-                            fullId: `${groupConfig.provider_id}/${model}`,
+                            id: isFullModelRef(model) ? model.split('/').slice(1).join('/') : model,
+                            fullId: isFullModelRef(model) ? model : `${groupConfig.provider_id}/${model}`,
+                            providerId: isFullModelRef(model)
+                              ? model.split('/')[0]
+                              : groupConfig.provider_id,
                             isPrimary: groupConfig.primary_model === model,
                           })),
                         })}
@@ -992,7 +1025,7 @@ function TuziGroupCard({ group, groupConfig, isInUse, onConfigure, onOpenActions
               ) : (
                 <>
                   <p className="text-sm text-gray-400">
-                    该分组尚未配置。保存后会同步写入 env 与 openclaw.json，并保留在 Tuzi 双分组配置中。
+                    该分组尚未配置。保存后会同步写入 env 与 openclaw.json，并保留在快速接入配置中。
                   </p>
                   <div className="flex gap-2">
                     <button onClick={onConfigure} className="btn-primary text-sm py-2 px-3">
@@ -1046,7 +1079,8 @@ function ModelActionDialog({ target, onClose, onSetPrimary, onTestModel }: Model
     setDialogError(null);
     setDialogTestResult(null);
     try {
-      const result = await onTestModel(target.providerId, selectedTestModelId);
+      const selectedModel = target.models.find((model) => model.id === selectedTestModelId) || target.models[0];
+      const result = await onTestModel(selectedModel.providerId, selectedTestModelId);
       setDialogTestResult(result);
     } catch (e) {
       setDialogError(String(e));
@@ -1223,6 +1257,7 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
   const [group, setGroup] = useState<TuziGroup>(initialGroup);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fixedModels = getFixedTuziModels(group);
   const {
     apiKey,
     setApiKey,
@@ -1233,6 +1268,7 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
     fetchingModels,
     fetchError,
     manualEntryEnabled,
+    fixedGroup: hookFixedGroup,
     modelsSource,
     cacheTimestamp,
     warning,
@@ -1274,13 +1310,13 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold text-white">Tuzi API 快速接入</h3>
-            <p className="text-sm text-gray-400">配置 Claude-Code 或 Codex 分组，同时保留其他 Provider 能力。</p>
+            <p className="text-sm text-gray-400">配置 Claude-Code、Codex 或 GACCode 分组，同时保留其他 Provider 能力。</p>
           </div>
           <button onClick={onClose} className="text-sm text-gray-500 hover:text-white">关闭</button>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          {(['claude-code', 'codex'] as TuziGroup[]).map((item) => {
+        <div className="grid md:grid-cols-3 gap-3">
+          {QUICK_ACCESS_GROUPS.map((item) => {
             const current = tuziConfig?.groups.find((groupItem) => groupItem.group === item);
             return (
               <button
@@ -1288,7 +1324,7 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
                 onClick={() => setGroup(item)}
                 className={clsx('rounded-xl border p-4 text-left', group === item ? 'border-claw-500 bg-claw-500/10' : 'border-dark-500 bg-dark-600')}
               >
-                <p className="text-white font-medium">{item === 'claude-code' ? 'Claude-Code' : 'Codex'}</p>
+                <p className="text-white font-medium">{getGroupLabel(item)}</p>
                 <p className="text-xs text-gray-400 mt-1">{current?.configured ? `已配置: ${current.primary_model}` : '未配置'}</p>
               </button>
             );
@@ -1300,34 +1336,41 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
           <input
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder="输入该分组对应的 Tuzi API Key"
+            placeholder={hookFixedGroup ? '输入 GACCode API Key' : '输入该分组对应的 Tuzi API Key'}
             className="input-base"
           />
-          <div className="mt-3 flex items-center gap-3">
-            <button
-              onClick={fetchModels}
-              disabled={fetchingModels}
-              className="btn-secondary flex items-center gap-2"
-            >
-              {fetchingModels ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-              获取可用模型
-            </button>
-            {modelsSource && (
-              <p className="text-xs text-gray-500">
-                当前来源：{modelsSource === 'api' ? '接口实时拉取' : `本地缓存${cacheTimestamp ? `（${cacheTimestamp}）` : ''}`}
-              </p>
-            )}
-          </div>
+          {!hookFixedGroup && (
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                onClick={fetchModels}
+                disabled={fetchingModels}
+                className="btn-secondary flex items-center gap-2"
+              >
+                {fetchingModels ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                获取可用模型
+              </button>
+              {modelsSource && (
+                <p className="text-xs text-gray-500">
+                  当前来源：{modelsSource === 'api' ? '接口实时拉取' : `本地缓存${cacheTimestamp ? `（${cacheTimestamp}）` : ''}`}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div>
-          <label className="block text-sm text-gray-400 mb-2">模型列表</label>
-          {warning && (
+          <label className="block text-sm text-gray-400 mb-2">
+            模型列表
+            <span className="ml-2 text-xs text-gray-500">
+              {hookFixedGroup ? '固定模型会自动写入' : '第一个模型将作为该分组主模型'}
+            </span>
+          </label>
+          {warning && !hookFixedGroup && (
             <div className="mb-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-100">
               实时拉取失败，已回退到本地缓存。{warning}
             </div>
           )}
-          {fetchError && (
+          {fetchError && !hookFixedGroup && (
             <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
               {fetchError}
             </div>
@@ -1338,9 +1381,17 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
                 key={model.id}
                 className={clsx('flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer', model.selected ? 'border-claw-500 bg-claw-500/10' : 'border-dark-500 bg-dark-600')}
               >
-                <input type="checkbox" checked={model.selected} onChange={() => toggleModel(model.id)} className="w-4 h-4" />
+                <input
+                  type="checkbox"
+                  checked={model.selected}
+                  onChange={() => !hookFixedGroup && toggleModel(model.id)}
+                  disabled={hookFixedGroup}
+                  className="w-4 h-4"
+                />
                 <div className="min-w-0">
-                  <span className="text-sm text-white break-all">{model.id}</span>
+                  <span className="text-sm text-white break-all">
+                    {hookFixedGroup ? (model.id.startsWith('gpt-') ? `gac-codex/${model.id}` : `gac-claude/${model.id}`) : model.id}
+                  </span>
                   {model.unavailable && (
                     <p className="text-[11px] text-yellow-300 mt-1">当前配置中，接口未返回</p>
                   )}
@@ -1350,12 +1401,14 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
           </div>
           {displayModels.length === 0 && (
             <div className="rounded-xl border border-dashed border-dark-500 bg-dark-600/50 px-4 py-6 text-sm text-gray-400">
-              先输入 API Key 并获取模型列表。若接口和缓存都不可用，下面会开放手动输入。
+              {hookFixedGroup
+                ? 'GACCode 会直接写入固定模型，不需要额外拉取。'
+                : '先输入 API Key 并获取模型列表。若接口和缓存都不可用，下面会开放手动输入。'}
             </div>
           )}
         </div>
 
-        {manualEntryEnabled && (
+        {manualEntryEnabled && !hookFixedGroup && (
           <div className="space-y-2">
             <p className="text-sm text-yellow-100">当前无法获取模型列表，可手动补充模型名称作为兜底。</p>
             <div className="flex gap-2">
@@ -1372,7 +1425,13 @@ function TuziDialog({ tuziConfig, initialGroup, onClose, onSave }: TuziDialogPro
 
         {selectedModels.length > 0 && (
           <div className="rounded-xl bg-dark-600 p-3 text-sm text-gray-300">
-            默认模型：<span className="text-white font-medium">{selectedModels[0]}</span>
+            默认模型：<span className="text-white font-medium">{hookFixedGroup ? 'gac-claude/claude-opus-4-6' : selectedModels[0]}</span>
+          </div>
+        )}
+
+        {hookFixedGroup && fixedModels.length > 0 && (
+          <div className="rounded-xl border border-dark-500 bg-dark-600/60 p-4 text-sm text-gray-300">
+            GACCode 将自动创建两个 Provider：<span className="text-white">gac-claude</span> 与 <span className="text-white">gac-codex</span>。
           </div>
         )}
 
@@ -1480,7 +1539,7 @@ export function AIConfig() {
     }
   }, []);
 
-  const normalProviders = aiConfig?.configured_providers.filter(provider => !TUZI_PROVIDER_NAMES.has(provider.name)) || [];
+  const normalProviders = aiConfig?.configured_providers.filter(provider => !QUICK_ACCESS_PROVIDER_NAMES.has(provider.name)) || [];
 
   useEffect(() => {
     loadData();
@@ -1634,13 +1693,14 @@ export function AIConfig() {
         <div className="space-y-4">
           <h3 className="text-lg font-medium text-white flex items-center gap-2">
             <Sparkles size={18} className="text-claw-400" />
-            Tuzi API 快速接入
+            快速接入
           </h3>
 
           <div className="space-y-3">
-            {(['claude-code', 'codex'] as TuziGroup[]).map((group) => {
+            {QUICK_ACCESS_GROUPS.map((group) => {
               const groupConfig = tuziConfig?.groups.find((item) => item.group === group);
-              const isInUse = aiConfig?.primary_model?.startsWith(`${groupConfig?.provider_id || ''}/`) || false;
+              const providerIds = groupConfig?.provider_ids || (groupConfig?.provider_id ? [groupConfig.provider_id] : []);
+              const isInUse = providerIds.some((providerId) => aiConfig?.primary_model?.startsWith(`${providerId}/`)) || false;
 
               return (
                 <TuziGroupCard
