@@ -5,6 +5,7 @@ use crate::utils::platform;
 use crate::utils::file;
 use log::{info, debug, warn};
 use std::time::{Duration, Instant};
+use std::fs::OpenOptions;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -425,22 +426,53 @@ pub fn run_openclaw_with_timeout(args: &[&str], timeout: Duration) -> Result<Str
     debug!("[Shell] 执行带超时的 openclaw 命令: {:?}, timeout={:?}", args, timeout);
 
     let mut command = build_openclaw_command(args)?;
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let temp_dir = std::env::temp_dir();
+    let unique = format!(
+        "openclaw-manager-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let stdout_path = temp_dir.join(format!("{}.stdout.log", unique));
+    let stderr_path = temp_dir.join(format!("{}.stderr.log", unique));
+
+    let stdout_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&stdout_path)
+        .map_err(|e| format!("创建 openclaw stdout 临时文件失败: {}", e))?;
+    let stderr_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&stderr_path)
+        .map_err(|e| format!("创建 openclaw stderr 临时文件失败: {}", e))?;
+
+    command
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
 
     let mut child = command
         .spawn()
         .map_err(|e| format!("执行 openclaw 失败: {}", e))?;
     let start = Instant::now();
 
+    let read_output = || {
+        let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+        let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&stdout_path);
+        let _ = std::fs::remove_file(&stderr_path);
+        (stdout, stderr)
+    };
+
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|e| format!("读取 openclaw 输出失败: {}", e))?;
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                if output.status.success() {
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("等待 openclaw 进程退出失败: {}", e))?;
+                let (stdout, stderr) = read_output();
+                if status.success() {
                     return Ok(stdout);
                 }
                 return Err(format!("{}\n{}", stdout, stderr).trim().to_string());
@@ -448,24 +480,23 @@ pub fn run_openclaw_with_timeout(args: &[&str], timeout: Duration) -> Result<Str
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
-                    let output = child.wait_with_output().ok();
-                    let details = output
-                        .as_ref()
-                        .map(|out| {
-                            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                            format!("{}\n{}", stdout, stderr).trim().to_string()
-                        })
-                        .filter(|text| !text.is_empty());
-                    return Err(match details {
-                        Some(text) => format!("openclaw 命令执行超时（>{} 秒）\n{}", timeout.as_secs(), text),
-                        None => format!("openclaw 命令执行超时（>{} 秒）", timeout.as_secs()),
+                    let _ = child.wait();
+                    let (stdout, stderr) = read_output();
+                    let details = format!("{}\n{}", stdout.trim(), stderr.trim())
+                        .trim()
+                        .to_string();
+                    return Err(if !details.is_empty() {
+                        format!("openclaw 命令执行超时（>{} 秒）\n{}", timeout.as_secs(), details)
+                    } else {
+                        format!("openclaw 命令执行超时（>{} 秒）", timeout.as_secs())
                     });
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
+                let _ = read_output();
                 return Err(format!("等待 openclaw 进程失败: {}", e));
             }
         }
