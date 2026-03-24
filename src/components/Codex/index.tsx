@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle,
   Loader2,
   Route,
   Upload,
@@ -459,30 +458,40 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
         {section === 'faq' && (
           <div className="space-y-4">
             <div className="bg-dark-700 rounded-2xl p-6 border border-dark-500">
-              <h4 className="text-white font-medium mb-3">install_codex.sh 读取状态</h4>
+              <h4 className="text-white font-medium mb-3">FAQ 状态信息</h4>
               {loadingDocs ? (
                 <p className="text-sm text-gray-400 inline-flex items-center gap-2">
                   <Loader2 size={14} className="animate-spin" />
-                  正在加载脚本...
+                  正在加载文档状态...
                 </p>
               ) : (
-                <div className="text-sm text-gray-300 space-y-1">
-                  <p>更新时间：{referenceDocs?.updated_at || '--'}</p>
+                <div className="space-y-2 text-sm text-gray-300">
+                  <p>文档来源：Codex/Claude 官方流程文档</p>
+                  <p>最近更新时间：{referenceDocs?.updated_at || '--'}</p>
+                  <p>
+                    本地参考读取：
+                    {referenceDocs?.error ? '异常' : '正常'}
+                  </p>
                   {referenceDocs?.error && (
-                    <p className="text-yellow-300 inline-flex items-center gap-2">
-                      <AlertTriangle size={14} />
-                      {referenceDocs.error}
-                    </p>
+                    <p className="text-yellow-300 text-xs">{referenceDocs.error}</p>
                   )}
                 </div>
               )}
             </div>
 
             <div className="bg-dark-700 rounded-2xl p-6 border border-dark-500">
-              <h4 className="text-white font-medium mb-3">install_codex.sh</h4>
-              <pre className="bg-dark-800 rounded-lg p-4 text-xs text-gray-300 whitespace-pre-wrap max-h-[520px] overflow-y-auto">
-                {referenceDocs?.script_markdown || '暂无内容'}
-              </pre>
+              <h4 className="text-white font-medium mb-2">官方文档</h4>
+              <p className="text-sm text-gray-400 mb-4">
+                点击下方按钮跳转到你提供的官方说明文档。
+              </p>
+              <a
+                href="https://wiki.tu-zi.com/s/8c61a536-7a59-4410-a5e2-8dab3d041958/doc/claude-ZP53hwclYa"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center px-4 py-2 rounded-lg bg-claw-500 hover:bg-claw-600 text-sm text-white transition-colors"
+              >
+                打开官方文档
+              </a>
             </div>
           </div>
         )}
