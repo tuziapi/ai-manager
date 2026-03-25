@@ -7,6 +7,7 @@ import { Dashboard } from './components/Dashboard';
 import { Modules } from './components/Modules';
 import { ClaudeCode } from './components/ClaudeCode';
 import { Codex } from './components/Codex';
+import { Setup } from './components/Setup';
 import { AIConfig } from './components/AIConfig';
 import { Skills } from './components/Skills';
 import { Channels } from './components/Channels';
@@ -20,6 +21,7 @@ import { ModuleType } from './types/modules';
 export type TopModuleType = 'openclaw' | 'claudecode' | 'codex';
 
 export type OpenclawSubPageType =
+  | 'setup'
   | 'dashboard'
   | 'ai'
   | 'skills'
@@ -156,7 +158,7 @@ function App() {
 
   const handleOpenFromModuleCenter = (moduleId: ModuleType) => {
     if (moduleId === 'openclaw') {
-      handleOpenclawSubPage('dashboard');
+      handleOpenclawSubPage(envStatus?.openclaw_installed ? 'dashboard' : 'setup');
       return;
     }
 
@@ -170,7 +172,21 @@ function App() {
 
   const renderOpenclawPage = () => {
     const pages: Record<OpenclawSubPageType, JSX.Element> = {
-      dashboard: <Dashboard envStatus={envStatus} onNavigateToModules={handleOpenOverview} />,
+      setup: (
+        <Setup
+          onComplete={async () => {
+            await checkEnvironment();
+            handleOpenclawSubPage('dashboard');
+          }}
+        />
+      ),
+      dashboard: (
+        <Dashboard
+          envStatus={envStatus}
+          onNavigateToModules={handleOpenOverview}
+          onNavigateToSetup={() => handleOpenclawSubPage('setup')}
+        />
+      ),
       ai: <AIConfig />,
       skills: (
         <Skills
@@ -255,6 +271,7 @@ function App() {
       <Sidebar
         view={view}
         activeTopModule={activeTopModule}
+        openclawInstalled={!!envStatus?.openclaw_installed}
         openclawExpanded={openclawExpanded}
         activeOpenclawSubPage={activeOpenclawSubPage}
         claudecodeExpanded={claudecodeExpanded}

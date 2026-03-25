@@ -19,6 +19,7 @@ interface HeaderProps {
 }
 
 const openclawPageTitles: Record<OpenclawSubPageType, { title: string; description: string }> = {
+  setup: { title: 'OpenClaw / 快速部署', description: '检测未安装时的一键安装与初始化入口' },
   dashboard: { title: 'OpenClaw / 服务概览', description: '服务状态、日志与快捷操作' },
   ai: { title: 'OpenClaw / AI 配置', description: '配置 AI 提供商和模型' },
   skills: { title: 'OpenClaw / Skills', description: '安装和维护 tuzi-skills 技能集' },

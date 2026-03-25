@@ -11,9 +11,10 @@ import clsx from 'clsx';
 interface DashboardProps {
   envStatus: EnvironmentStatus | null;
   onNavigateToModules: () => void;
+  onNavigateToSetup: () => void;
 }
 
-export function Dashboard({ envStatus, onNavigateToModules }: DashboardProps) {
+export function Dashboard({ envStatus, onNavigateToModules, onNavigateToSetup }: DashboardProps) {
   const [status, setStatus] = useState<ServiceStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -193,6 +194,27 @@ export function Dashboard({ envStatus, onNavigateToModules }: DashboardProps) {
             </div>
           </div>
         </motion.div>
+
+        {!envStatus?.openclaw_installed && (
+          <motion.div variants={itemVariants}>
+            <div className="bg-dark-700 rounded-2xl p-6 border border-amber-500/40">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-white font-medium">检测到 OpenClaw 未安装</h3>
+                  <p className="text-sm text-gray-400 mt-1">
+                    可通过内置向导一键安装并初始化配置。
+                  </p>
+                </div>
+                <button
+                  onClick={onNavigateToSetup}
+                  className="px-4 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-sm transition-colors"
+                >
+                  快速部署 OpenClaw
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         {/* 服务状态卡片 */}
         <motion.div variants={itemVariants}>

@@ -32,6 +32,7 @@ interface ServiceStatus {
 interface SidebarProps {
   view: AppViewType;
   activeTopModule: TopModuleType;
+  openclawInstalled: boolean;
   openclawExpanded: boolean;
   activeOpenclawSubPage: OpenclawSubPageType;
   claudecodeExpanded: boolean;
@@ -48,7 +49,13 @@ interface SidebarProps {
   serviceStatus: ServiceStatus | null;
 }
 
-const openclawSubItems: { id: OpenclawSubPageType; label: string; icon: React.ElementType }[] = [
+const openclawSubItems: {
+  id: OpenclawSubPageType;
+  label: string;
+  icon: React.ElementType;
+  showWhen?: 'always' | 'uninstalled';
+}[] = [
+  { id: 'setup', label: '快速部署', icon: Wrench, showWhen: 'uninstalled' },
   { id: 'dashboard', label: '服务概览', icon: LayoutDashboard },
   { id: 'ai', label: 'AI 配置', icon: Bot },
   { id: 'skills', label: 'Skills', icon: Sparkles },
@@ -75,6 +82,7 @@ const codexSubItems: { id: CodexSubPageType; label: string; icon: React.ElementT
 export function Sidebar({
   view,
   activeTopModule,
+  openclawInstalled,
   openclawExpanded,
   activeOpenclawSubPage,
   claudecodeExpanded,
@@ -157,6 +165,9 @@ export function Sidebar({
             <li>
               <ul className="mt-1 space-y-1 pl-5">
                 {openclawSubItems.map((item) => {
+                  if (item.showWhen === 'uninstalled' && openclawInstalled) {
+                    return null;
+                  }
                   const Icon = item.icon;
                   const isActive = openclawPageActive && activeOpenclawSubPage === item.id;
 
