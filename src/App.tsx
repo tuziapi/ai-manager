@@ -13,6 +13,7 @@ import { Channels } from './components/Channels';
 import { Settings } from './components/Settings';
 import { Testing } from './components/Testing';
 import { Logs } from './components/Logs';
+import { ToastStack } from './components/ToastStack';
 import { appLogger } from './lib/logger';
 import { EnvironmentStatus, isTauri } from './lib/tauri';
 import { ModuleType } from './types/modules';
@@ -282,6 +283,8 @@ function App() {
 
         <main className="flex-1 overflow-hidden p-6">{renderPage()}</main>
       </div>
+
+      <ToastStack />
     </div>
   );
 }

@@ -107,6 +107,7 @@ fn main() {
             codex::uninstall_codex,
             codex::reinstall_codex,
             codex::list_codex_routes,
+            codex::add_codex_route,
             codex::switch_codex_route,
             codex::set_codex_route_model,
         ])

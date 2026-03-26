@@ -519,7 +519,17 @@ pub async fn switch_claude_route(route_name: String) -> Result<ClaudeActionResul
 
     let mut op_logs = vec![format!("switch_claude_route route={}", route_name)];
     op_logs.push(format!("已写入路线配置: {}", get_claude_route_file_path()));
-    if route_name != "改版" {
+    if route_name == "改版" {
+        // 改版走内置/网页鉴权，shell 里若仍保留 tu-zi 或 gac 的 ANTHROPIC_* 会继续指向旧线路
+        match clear_env_in_rc() {
+            Ok(paths) => {
+                for path in paths {
+                    op_logs.push(format!("已从 shell 配置移除 ANTHROPIC_*: {}", path));
+                }
+            }
+            Err(e) => op_logs.push(format!("清理 shell 环境变量失败: {}", e)),
+        }
+    } else {
         let key = route.api_key.clone().unwrap_or_default();
         let base_url = route.base_url.clone().unwrap_or_default();
         let token = route.api_token.clone().unwrap_or_default();
@@ -698,15 +708,23 @@ pub async fn install_claudecode(
         );
         data.current_route = Some("改版".to_string());
         write_route_file(&data)?;
-        let logs = vec![
+        let mut logs = vec![
             format!("$ {}", command),
             output,
             format!("已写入路线配置: {}", get_claude_route_file_path()),
         ];
+        match clear_env_in_rc() {
+            Ok(paths) => {
+                for path in paths {
+                    logs.push(format!("已从 shell 配置移除 ANTHROPIC_*（避免仍走 tu-zi/gac 线路）: {}", path));
+                }
+            }
+            Err(e) => logs.push(format!("清理 shell 环境变量失败: {}", e)),
+        }
         return Ok(success_result(
-            "改版 ClaudeCode 安装成功",
+            "改版 ClaudeCode 安装成功，请重新打开终端后再运行 claude",
             logs.join("\n"),
-            false,
+            true,
         ));
     }
 
@@ -803,11 +821,44 @@ pub async fn upgrade_claudecode(
     };
 
     match run_npm_global(&command) {
-        Ok(output) => Ok(success_result(
-            message,
-            format!("$ {}\n{}", command, output),
-            false,
-        )),
+        Ok(output) => {
+            if variant == "modified" || variant == "a" || variant == "改版" {
+                let mut data = read_route_file();
+                data.routes
+                    .entry("改版".to_string())
+                    .or_insert(RouteEntry {
+                        api_key: None,
+                        base_url: None,
+                        api_token: None,
+                    });
+                data.current_route = Some("改版".to_string());
+                let mut logs = vec![format!("$ {}", command), output];
+                match write_route_file(&data) {
+                    Ok(()) => {
+                        logs.push(format!("已同步当前路线为「改版」: {}", get_claude_route_file_path()));
+                    }
+                    Err(e) => logs.push(format!("警告：路线文件写入失败（请手动检查）: {}", e)),
+                }
+                match clear_env_in_rc() {
+                    Ok(paths) => {
+                        for path in paths {
+                            logs.push(format!("已从 shell 配置移除 ANTHROPIC_*: {}", path));
+                        }
+                    }
+                    Err(e) => logs.push(format!("清理 shell 环境变量失败: {}", e)),
+                }
+                return Ok(success_result(
+                    message,
+                    logs.join("\n"),
+                    true,
+                ));
+            }
+            Ok(success_result(
+                message,
+                format!("$ {}\n{}", command, output),
+                false,
+            ))
+        }
         Err(e) => Ok(error_result("ClaudeCode 升级失败", e, String::new())),
     }
 }

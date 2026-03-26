@@ -398,7 +398,8 @@ export const api = {
     route?: string,
     apiKey?: string,
     model?: string,
-    modelReasoningEffort?: string
+    modelReasoningEffort?: string,
+    routeBaseUrl?: string
   ) =>
     invokeWithLog<CodexActionResult>('install_codex', {
       variant,
@@ -408,6 +409,8 @@ export const api = {
       model,
       model_reasoning_effort: modelReasoningEffort,
       modelReasoningEffort,
+      route_base_url: routeBaseUrl,
+      routeBaseUrl,
     }),
   upgradeCodex: (targetVariant?: CodexInstallVariant) =>
     invokeWithLog<CodexActionResult>('upgrade_codex', {
@@ -425,6 +428,7 @@ export const api = {
     apiKey?: string,
     model?: string,
     modelReasoningEffort?: string,
+    routeBaseUrl?: string,
     clearConfig?: boolean
   ) =>
     invokeWithLog<CodexActionResult>('reinstall_codex', {
@@ -435,10 +439,30 @@ export const api = {
       model,
       model_reasoning_effort: modelReasoningEffort,
       modelReasoningEffort,
+      route_base_url: routeBaseUrl,
+      routeBaseUrl,
       clear_config: clearConfig,
       clearConfig,
     }),
   listCodexRoutes: () => invokeWithLog<CodexRoutesResponse>('list_codex_routes'),
+  addCodexRoute: (
+    routeName: string,
+    baseUrl: string,
+    apiKey: string,
+    model?: string,
+    modelReasoningEffort?: string
+  ) =>
+    invokeWithLog<CodexActionResult>('add_codex_route', {
+      route_name: routeName,
+      routeName,
+      base_url: baseUrl,
+      baseUrl,
+      api_key: apiKey,
+      apiKey,
+      model,
+      model_reasoning_effort: modelReasoningEffort,
+      modelReasoningEffort,
+    }),
   switchCodexRoute: (
     routeName: string,
     apiKey: string,

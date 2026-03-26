@@ -1,6 +1,6 @@
 use crate::utils::{file, platform, shell};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use tauri::command;
 
@@ -153,13 +153,36 @@ fn normalize_install_type(value: &str) -> Option<String> {
     }
 }
 
-fn normalize_route(value: &str) -> Option<String> {
-    let lower = value.trim().to_lowercase();
-    match lower.as_str() {
-        "gac" | "tuzi" => Some(lower),
-        "none" | "" => None,
+/// gac / tuzi 或符合规则的自定义线路名（小写字母数字与 `-` `_`，1–48 字符）
+fn normalize_route_input(value: &str) -> Option<String> {
+    let s = value.trim().to_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    match s.as_str() {
+        "gac" | "tuzi" => Some(s),
+        "none" => None,
+        _ if is_valid_custom_codex_route_name(&s) => Some(s),
         _ => None,
     }
+}
+
+fn is_valid_custom_codex_route_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 48
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        && s != "gac"
+        && s != "tuzi"
+        && s != "none"
+}
+
+fn parse_route_state_value(value: &str) -> Option<String> {
+    let t = value.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    normalize_route_input(t)
 }
 
 fn route_base_url(route: &str) -> Option<&'static str> {
@@ -198,7 +221,7 @@ fn parse_install_state(content: &str) -> InstallState {
         }
 
         if let Some(value) = line.strip_prefix("ROUTE=") {
-            route = normalize_route(value);
+            route = parse_route_state_value(value);
         }
     }
 
@@ -217,9 +240,10 @@ fn load_install_state() -> InstallState {
 fn save_install_state(install_type: &str, route: Option<&str>) -> Result<(), String> {
     let install_type = normalize_install_type(install_type)
         .ok_or_else(|| format!("非法安装类型: {}", install_type))?;
-    let route_value = route
-        .and_then(normalize_route)
-        .unwrap_or_else(|| "none".to_string());
+    let route_value = match route {
+        None | Some("") => "none".to_string(),
+        Some(r) => normalize_route_input(r.trim()).ok_or_else(|| format!("非法路线: {}", r))?,
+    };
 
     let content = format!(
         "INSTALL_TYPE={}\nROUTE={}\nMANAGED_BY=sh.tu-zi.com\n",
@@ -254,13 +278,13 @@ fn parse_codex_config(content: &str) -> ParsedCodexConfig {
 
             let section_name = line.trim_start_matches('[').trim_end_matches(']');
             if let Some(route) = section_name.strip_prefix("model_providers.") {
-                if let Some(valid_route) = normalize_route(route) {
+                if let Some(valid_route) = normalize_route_input(route.trim()) {
                     section = ConfigSection::ModelProvider;
                     section_route = Some(valid_route.clone());
                     parsed.routes.entry(valid_route).or_default();
                 }
             } else if let Some(route) = section_name.strip_prefix("profiles.") {
-                if let Some(valid_route) = normalize_route(route) {
+                if let Some(valid_route) = normalize_route_input(route.trim()) {
                     section = ConfigSection::Profile;
                     section_route = Some(valid_route.clone());
                     parsed.routes.entry(valid_route).or_default();
@@ -274,7 +298,7 @@ fn parse_codex_config(content: &str) -> ParsedCodexConfig {
             let value = value_raw.trim().trim_matches('"').to_string();
 
             if key == "profile" {
-                parsed.profile = normalize_route(&value);
+                parsed.profile = normalize_route_input(&value);
                 continue;
             }
 
@@ -304,26 +328,29 @@ fn parse_codex_config(content: &str) -> ParsedCodexConfig {
     parsed
 }
 
-fn filter_codex_config(existing_content: &str) -> String {
+fn filter_codex_config_strips(existing_content: &str, strip_route_names: &BTreeSet<String>) -> String {
     let mut lines: Vec<String> = Vec::new();
-    let mut skipping_codex_sections = false;
+    let mut skipping_managed_section = false;
 
     for raw in existing_content.lines() {
         let trimmed = raw.trim();
 
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             let section = trimmed.trim_start_matches('[').trim_end_matches(']');
-            let should_skip = matches!(
-                section,
-                "model_providers.gac" | "model_providers.tuzi" | "profiles.gac" | "profiles.tuzi"
-            );
-            skipping_codex_sections = should_skip;
+            let should_skip = if let Some(name) = section.strip_prefix("model_providers.") {
+                strip_route_names.contains(name)
+            } else if let Some(name) = section.strip_prefix("profiles.") {
+                strip_route_names.contains(name)
+            } else {
+                false
+            };
+            skipping_managed_section = should_skip;
             if should_skip {
                 continue;
             }
         }
 
-        if skipping_codex_sections {
+        if skipping_managed_section {
             continue;
         }
 
@@ -337,29 +364,84 @@ fn filter_codex_config(existing_content: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-fn write_codex_config(
-    route: &str,
-    model: &str,
-    model_reasoning_effort: &str,
-) -> Result<(), String> {
-    let base_url = route_base_url(route).ok_or_else(|| format!("未知 route: {}", route))?;
+fn collect_strip_route_names(merged: &ParsedCodexConfig, existing: &str) -> BTreeSet<String> {
+    let mut strip: BTreeSet<String> = BTreeSet::new();
+    for k in parse_codex_config(existing).routes.keys() {
+        strip.insert(k.clone());
+    }
+    for k in merged.routes.keys() {
+        strip.insert(k.clone());
+    }
+    strip.insert("gac".to_string());
+    strip.insert("tuzi".to_string());
+    strip
+}
+
+fn effective_base_url(route: &str, entry: &ConfigRouteEntry) -> Result<String, String> {
+    if let Some(url) = &entry.base_url {
+        let t = url.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    route_base_url(route)
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            format!(
+                "路线「{}」缺少 base_url，请填写兼容 OpenAI Responses 的 API 根地址",
+                route
+            )
+        })
+}
+
+fn write_codex_config_merged(merged: &ParsedCodexConfig, profile_route: &str) -> Result<(), String> {
+    let normalized_profile = normalize_route_input(profile_route).ok_or_else(|| {
+        format!(
+            "非法当前路线: {}（支持 gac / tuzi / 自定义线路名）",
+            profile_route
+        )
+    })?;
+
+    if !merged.routes.contains_key(&normalized_profile) {
+        return Err(format!(
+            "路线「{}」尚未配置。内置线路请用安装页初始化；自定义线路请先在路线管理中新增",
+            normalized_profile
+        ));
+    }
+
     let config_path = get_codex_config_file_path();
     let existing = file::read_file(&config_path).unwrap_or_default();
-    let filtered = filter_codex_config(&existing);
+    let strip_names = collect_strip_route_names(merged, &existing);
+    let filtered = filter_codex_config_strips(&existing, &strip_names);
 
-    let mut output = format!("profile = \"{}\"\n\n", route);
+    let mut output = format!("profile = \"{}\"\n\n", normalized_profile);
     if !filtered.is_empty() {
         output.push_str(filtered.as_str());
         output.push_str("\n\n");
     }
 
-    output.push_str(format!(
-        "[model_providers.{route}]\nname = \"{route}\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nenv_key = \"CODEX_API_KEY\"\n\n[profiles.{route}]\nmodel_provider = \"{route}\"\nmodel = \"{model}\"\nmodel_reasoning_effort = \"{reasoning}\"\napproval_policy = \"on-request\"\n",
-        route = route,
-        base_url = base_url,
-        model = model,
-        reasoning = model_reasoning_effort,
-    ).as_str());
+    for (route, entry) in &merged.routes {
+        let base_url = effective_base_url(route, entry)?;
+        let model = entry
+            .model
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_MODEL);
+        let reasoning = entry
+            .model_reasoning_effort
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_REASONING);
+        output.push_str(&format!(
+            "[model_providers.{r}]\nname = \"{r}\"\nbase_url = \"{url}\"\nwire_api = \"responses\"\nenv_key = \"CODEX_API_KEY\"\n\n[profiles.{r}]\nmodel_provider = \"{r}\"\nmodel = \"{model}\"\nmodel_reasoning_effort = \"{reasoning}\"\napproval_policy = \"on-request\"\n\n",
+            r = route,
+            url = base_url,
+            model = model,
+            reasoning = reasoning,
+        ));
+    }
 
     file::write_file(&config_path, &output).map_err(|e| format!("写入 config.toml 失败: {}", e))
 }
@@ -395,12 +477,15 @@ fn apply_env_to_rc(api_key: &str) -> Result<Vec<String>, String> {
             .filter(|line| {
                 let trimmed = line.trim_start();
                 !trimmed.starts_with("export CODEX_API_KEY=")
+                    && !trimmed.starts_with("export CODEX_KEY=")
             })
             .map(|line| line.to_string())
             .collect();
 
         let mut lines = filtered_lines;
+        // 与 sh.tu-zi.com/setup_codex 脚本一致：脚本写入 CODEX_KEY；CLI 常用 CODEX_API_KEY，两处同步避免混用
         lines.push(format!("export CODEX_API_KEY=\"{}\"", api_key));
+        lines.push(format!("export CODEX_KEY=\"{}\"", api_key));
 
         file::write_file(&rc_path, &lines.join("\n"))
             .map_err(|e| format!("写入 {} 失败: {}", rc_path, e))?;
@@ -428,12 +513,13 @@ fn clear_env_in_rc() -> Result<Vec<String>, String> {
             .filter(|line| {
                 let trimmed = line.trim_start();
                 !trimmed.starts_with("export CODEX_API_KEY=")
+                    && !trimmed.starts_with("export CODEX_KEY=")
             })
             .map(|line| line.to_string())
             .collect();
 
         file::write_file(&rc_path, &filtered_lines.join("\n"))
-            .map_err(|e| format!("清理 {} 中的 CODEX_API_KEY 失败: {}", rc_path, e))?;
+            .map_err(|e| format!("清理 {} 中的 Codex 环境变量失败: {}", rc_path, e))?;
         updated.push(rc_path);
     }
 
@@ -523,28 +609,64 @@ fn configure_openai_route(
     api_key: &str,
     model: Option<String>,
     model_reasoning_effort: Option<String>,
+    override_base_url: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let normalized_route = normalize_route(route)
-        .ok_or_else(|| format!("非法路线: {}（仅支持 gac / tuzi）", route))?;
+    let normalized_route = normalize_route_input(route.trim()).ok_or_else(|| {
+        format!(
+            "非法路线: {}（支持 gac / tuzi / 自定义线路名：小写字母数字与 - _，最长 48）",
+            route
+        )
+    })?;
     if api_key.trim().is_empty() {
         return Err("切换路线需要提供 API Key".to_string());
     }
 
-    let current_config =
-        parse_codex_config(&file::read_file(&get_codex_config_file_path()).unwrap_or_default());
-    let existing_entry = current_config.routes.get(&normalized_route);
+    let config_path = get_codex_config_file_path();
+    let mut merged = parse_codex_config(&file::read_file(&config_path).unwrap_or_default());
+
+    merged.routes.entry(normalized_route.clone()).or_default();
+
+    let existing_entry = merged.routes.get(&normalized_route).cloned().unwrap_or_default();
     let settings = resolve_model_settings(
         model,
         model_reasoning_effort,
-        existing_entry.and_then(|v| v.model.as_deref()),
-        existing_entry.and_then(|v| v.model_reasoning_effort.as_deref()),
+        existing_entry.model.as_deref(),
+        existing_entry.model_reasoning_effort.as_deref(),
     );
 
-    write_codex_config(
-        &normalized_route,
-        &settings.model,
-        &settings.model_reasoning_effort,
-    )?;
+    let ent = merged.routes.get_mut(&normalized_route).unwrap();
+    if let Some(ref ob) = override_base_url {
+        let t = ob.trim();
+        if !t.is_empty() {
+            ent.base_url = Some(t.to_string());
+        }
+    }
+
+    let is_builtin = normalized_route == "gac" || normalized_route == "tuzi";
+    if is_builtin {
+        if ent
+            .base_url
+            .as_ref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        {
+            if let Some(b) = route_base_url(&normalized_route) {
+                ent.base_url = Some(b.to_string());
+            }
+        }
+    } else if ent
+        .base_url
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return Err("自定义线路需要有效的 BASE_URL（安装或切换时请填写，或先在配置文件中写入）".to_string());
+    }
+    ent.model = Some(settings.model.clone());
+    ent.model_reasoning_effort = Some(settings.model_reasoning_effort.clone());
+    merged.profile = Some(normalized_route.clone());
+
+    write_codex_config_merged(&merged, &normalized_route)?;
     let rc_paths = apply_env_to_rc(api_key.trim())?;
     save_install_state("openai", Some(&normalized_route))?;
 
@@ -575,22 +697,31 @@ fn build_routes(
     config: &ParsedCodexConfig,
     env_api_key: &str,
 ) -> Vec<CodexRoute> {
-    ["gac", "tuzi"]
-        .iter()
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    names.insert("gac".to_string());
+    names.insert("tuzi".to_string());
+    for k in config.routes.keys() {
+        names.insert(k.clone());
+    }
+
+    names
+        .into_iter()
         .map(|route_name| {
-            let config_entry = config.routes.get(*route_name);
+            let config_entry = config.routes.get(&route_name);
             let settings = resolve_model_settings(
                 None,
                 None,
                 config_entry.and_then(|v| v.model.as_deref()),
                 config_entry.and_then(|v| v.model_reasoning_effort.as_deref()),
             );
-            let is_current = current_route == Some(*route_name);
+            let is_current = current_route == Some(route_name.as_str());
+            let base_url = config_entry
+                .and_then(|v| v.base_url.clone())
+                .filter(|u| !u.trim().is_empty())
+                .or_else(|| route_base_url(&route_name).map(|v| v.to_string()));
             CodexRoute {
-                name: (*route_name).to_string(),
-                base_url: config_entry
-                    .and_then(|v| v.base_url.clone())
-                    .or_else(|| route_base_url(route_name).map(|v| v.to_string())),
+                name: route_name.clone(),
+                base_url,
                 has_key: is_current && !env_api_key.trim().is_empty(),
                 is_current,
                 api_key_masked: if is_current && !env_api_key.trim().is_empty() {
@@ -622,7 +753,13 @@ pub async fn get_codex_status() -> Result<CodexStatus, String> {
     let config = parse_codex_config(&file::read_file(&config_path).unwrap_or_default());
     let current_route = derive_current_route(&state, &config);
     let env_api_key = std::env::var("CODEX_API_KEY").ok().unwrap_or_default();
-    let routes = build_routes(current_route.as_deref(), &config, &env_api_key);
+    let env_codex_key = std::env::var("CODEX_KEY").ok().unwrap_or_default();
+    let env_key_effective = if env_api_key.trim().is_empty() {
+        env_codex_key
+    } else {
+        env_api_key
+    };
+    let routes = build_routes(current_route.as_deref(), &config, &env_key_effective);
 
     let install_type = state.install_type.or_else(|| {
         if installed {
@@ -641,10 +778,10 @@ pub async fn get_codex_status() -> Result<CodexStatus, String> {
         config_file_exists,
         routes,
         env_summary: CodexEnvSummary {
-            codex_api_key_masked: if env_api_key.trim().is_empty() {
+            codex_api_key_masked: if env_key_effective.trim().is_empty() {
                 None
             } else {
-                Some(mask_key(env_api_key.trim()))
+                Some(mask_key(env_key_effective.trim()))
             },
         },
     })
@@ -679,6 +816,116 @@ pub async fn get_codex_install_reference() -> Result<CodexReferenceDocs, String>
 }
 
 #[command]
+pub async fn add_codex_route(
+    route_name: String,
+    base_url: String,
+    api_key: String,
+    model: Option<String>,
+    model_reasoning_effort: Option<String>,
+) -> Result<CodexActionResult, String> {
+    let state = load_install_state();
+    if state.install_type.as_deref() == Some("gac") {
+        return Ok(error_result(
+            "添加线路失败",
+            "gac 改版安装不支持路线管理，请使用原版 Codex".to_string(),
+            String::new(),
+        ));
+    }
+
+    let trimmed_name = route_name.trim().to_lowercase();
+    if trimmed_name == "gac" || trimmed_name == "tuzi" {
+        return Ok(error_result(
+            "添加线路失败",
+            "gac / tuzi 为内置线路，请通过安装页或切换线路使用，勿用自定义添加".to_string(),
+            String::new(),
+        ));
+    }
+
+    let name = match normalize_route_input(&trimmed_name) {
+        Some(v) => v,
+        None => {
+            return Ok(error_result(
+                "添加线路失败",
+                "线路名须为小写字母、数字、- 或 _，最长 48 字符".to_string(),
+                String::new(),
+            ))
+        }
+    };
+
+    let base = base_url.trim();
+    if base.is_empty() {
+        return Ok(error_result(
+            "添加线路失败",
+            "Base URL 不能为空（需为兼容 OpenAI Responses 的 API 根地址，通常以 /v1 结尾）".to_string(),
+            String::new(),
+        ));
+    }
+
+    if api_key.trim().is_empty() {
+        return Ok(error_result(
+            "添加线路失败",
+            "API Key 不能为空".to_string(),
+            String::new(),
+        ));
+    }
+
+    let config_path = get_codex_config_file_path();
+    let mut merged = parse_codex_config(&file::read_file(&config_path).unwrap_or_default());
+    if merged.routes.contains_key(&name) {
+        return Ok(error_result(
+            "添加线路失败",
+            format!("线路「{}」已存在", name),
+            String::new(),
+        ));
+    }
+
+    let settings = resolve_model_settings(
+        model,
+        model_reasoning_effort,
+        Some(DEFAULT_MODEL),
+        Some(DEFAULT_REASONING),
+    );
+
+    merged.routes.insert(
+        name.clone(),
+        ConfigRouteEntry {
+            base_url: Some(base.to_string()),
+            model: Some(settings.model.clone()),
+            model_reasoning_effort: Some(settings.model_reasoning_effort.clone()),
+        },
+    );
+    merged.profile = Some(name.clone());
+
+    if let Err(e) = write_codex_config_merged(&merged, &name) {
+        return Ok(error_result("添加线路失败", e, String::new()));
+    }
+
+    let rc_paths = match apply_env_to_rc(api_key.trim()) {
+        Ok(paths) => paths,
+        Err(e) => return Ok(error_result("添加线路失败", e, String::new())),
+    };
+
+    if let Err(e) = save_install_state("openai", Some(&name)) {
+        return Ok(error_result("添加线路失败", e, String::new()));
+    }
+
+    let mut logs = vec![
+        format!("add_codex_route route={}", name),
+        format!("已写入配置: {}", get_codex_config_file_path()),
+        format!("已写入状态: {}", get_codex_state_file_path()),
+    ];
+    for path in rc_paths {
+        logs.push(format!("已更新环境变量: {}", path));
+    }
+
+    Ok(success_result(
+        "自定义线路已添加并切换，请重开终端后执行 codex",
+        logs.join("\n"),
+        true,
+    ))
+}
+
+#[command]
 pub async fn list_codex_routes() -> Result<CodexRoutesResponse, String> {
     let status = get_codex_status().await?;
     Ok(CodexRoutesResponse {
@@ -694,6 +941,7 @@ pub async fn install_codex(
     api_key: Option<String>,
     model: Option<String>,
     model_reasoning_effort: Option<String>,
+    route_base_url: Option<String>,
 ) -> Result<CodexActionResult, String> {
     let normalized_variant = variant.trim().to_lowercase();
     if normalized_variant != "openai" && normalized_variant != "gac" {
@@ -731,7 +979,13 @@ pub async fn install_codex(
 
     if let Some(selected_route) = route {
         let key = api_key.unwrap_or_default();
-        match configure_openai_route(&selected_route, &key, model, model_reasoning_effort) {
+        match configure_openai_route(
+            &selected_route,
+            &key,
+            model,
+            model_reasoning_effort,
+            route_base_url,
+        ) {
             Ok(route_logs) => {
                 logs.extend(route_logs);
                 return Ok(success_result(
@@ -781,6 +1035,7 @@ pub async fn switch_codex_route(
         api_key.trim(),
         model,
         model_reasoning_effort,
+        None,
     ) {
         Ok(logs) => Ok(success_result(
             "路线切换成功，请重开终端后执行 codex",
@@ -806,20 +1061,28 @@ pub async fn set_codex_route_model(
         ));
     }
 
-    let normalized_route = match normalize_route(route_name.trim()) {
+    let normalized_route = match normalize_route_input(route_name.trim()) {
         Some(v) => v,
         None => {
             return Ok(error_result(
                 "模型参数更新失败",
-                "仅支持 gac 或 tuzi 路线".to_string(),
+                "非法路线名（支持 gac / tuzi / 自定义线路）".to_string(),
                 String::new(),
             ))
         }
     };
 
-    let config =
-        parse_codex_config(&file::read_file(&get_codex_config_file_path()).unwrap_or_default());
-    let existing = config.routes.get(&normalized_route);
+    let config_path = get_codex_config_file_path();
+    let mut merged = parse_codex_config(&file::read_file(&config_path).unwrap_or_default());
+    if !merged.routes.contains_key(&normalized_route) {
+        return Ok(error_result(
+            "模型参数更新失败",
+            format!("路线「{}」不存在，请先添加或切换写入过该线路", normalized_route),
+            String::new(),
+        ));
+    }
+
+    let existing = merged.routes.get(&normalized_route);
     let settings = resolve_model_settings(
         Some(model),
         model_reasoning_effort,
@@ -835,15 +1098,18 @@ pub async fn set_codex_route_model(
         ));
     }
 
-    if let Err(e) = write_codex_config(
-        &normalized_route,
-        &settings.model,
-        &settings.model_reasoning_effort,
-    ) {
+    let ent = merged.routes.get_mut(&normalized_route).unwrap();
+    ent.model = Some(settings.model.clone());
+    ent.model_reasoning_effort = Some(settings.model_reasoning_effort.clone());
+
+    let state = load_install_state();
+    let active_profile = derive_current_route(&state, &merged)
+        .filter(|name| merged.routes.contains_key(name))
+        .unwrap_or_else(|| normalized_route.clone());
+
+    if let Err(e) = write_codex_config_merged(&merged, &active_profile) {
         return Ok(error_result("模型参数更新失败", e, String::new()));
     }
-
-    save_install_state("openai", Some(&normalized_route))?;
 
     Ok(success_result(
         "模型参数更新成功",
@@ -972,6 +1238,7 @@ pub async fn reinstall_codex(
     api_key: Option<String>,
     model: Option<String>,
     model_reasoning_effort: Option<String>,
+    route_base_url: Option<String>,
     clear_config: Option<bool>,
 ) -> Result<CodexActionResult, String> {
     let clear = clear_config.unwrap_or(false);
@@ -981,7 +1248,15 @@ pub async fn reinstall_codex(
         return Ok(uninstall);
     }
 
-    let install = install_codex(variant, route, api_key, model, model_reasoning_effort).await?;
+    let install = install_codex(
+        variant,
+        route,
+        api_key,
+        model,
+        model_reasoning_effort,
+        route_base_url,
+    )
+    .await?;
 
     let combined_output = [uninstall.stdout, install.stdout]
         .into_iter()
@@ -1009,9 +1284,10 @@ pub async fn reinstall_codex(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_npm_file_exists_path, filter_codex_config, is_npm_eexist_error, normalize_route,
-        parse_codex_config, parse_install_state,
+        extract_npm_file_exists_path, filter_codex_config_strips, is_npm_eexist_error,
+        normalize_route_input, parse_codex_config, parse_install_state,
     };
+    use std::collections::BTreeSet;
 
     #[test]
     fn parse_install_state_works() {
@@ -1020,16 +1296,23 @@ mod tests {
         assert_eq!(state.install_type.as_deref(), Some("openai"));
         assert_eq!(state.route.as_deref(), Some("gac"));
 
-        let unknown = parse_install_state("INSTALL_TYPE=other\nROUTE=xxx\n");
+        let unknown = parse_install_state("INSTALL_TYPE=other\nROUTE=bad.name\n");
         assert!(unknown.install_type.is_none());
         assert!(unknown.route.is_none());
+
+        let custom =
+            parse_install_state("INSTALL_TYPE=openai\nROUTE=my-line\nMANAGED_BY=sh.tu-zi.com\n");
+        assert_eq!(custom.install_type.as_deref(), Some("openai"));
+        assert_eq!(custom.route.as_deref(), Some("my-line"));
     }
 
     #[test]
-    fn normalize_route_works() {
-        assert_eq!(normalize_route("gac").as_deref(), Some("gac"));
-        assert_eq!(normalize_route("tuzi").as_deref(), Some("tuzi"));
-        assert!(normalize_route("abc").is_none());
+    fn normalize_route_input_works() {
+        assert_eq!(normalize_route_input("gac").as_deref(), Some("gac"));
+        assert_eq!(normalize_route_input("tuzi").as_deref(), Some("tuzi"));
+        assert_eq!(normalize_route_input("my-proxy").as_deref(), Some("my-proxy"));
+        assert!(normalize_route_input("bad.name").is_none());
+        assert!(normalize_route_input("").is_none());
     }
 
     #[test]
@@ -1066,7 +1349,10 @@ model_provider = "gac"
 [bar]
 b = 2
 "#;
-        let filtered = filter_codex_config(raw);
+        let mut strip = BTreeSet::new();
+        strip.insert("gac".to_string());
+        strip.insert("tuzi".to_string());
+        let filtered = filter_codex_config_strips(raw, &strip);
         assert!(filtered.contains("[foo]"));
         assert!(filtered.contains("[bar]"));
         assert!(!filtered.contains("[model_providers.gac]"));
@@ -1092,5 +1378,22 @@ model_reasoning_effort = "high"
         assert_eq!(route.base_url.as_deref(), Some("https://api.tu-zi.com/v1"));
         assert_eq!(route.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(route.model_reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn parse_codex_config_custom_route_section() {
+        let raw = r#"profile = "corp"
+
+[model_providers.corp]
+base_url = "https://api.example.com/v1"
+
+[profiles.corp]
+model = "gpt-4o"
+model_reasoning_effort = "low"
+"#;
+        let parsed = parse_codex_config(raw);
+        assert_eq!(parsed.profile.as_deref(), Some("corp"));
+        let route = parsed.routes.get("corp").expect("corp route");
+        assert_eq!(route.base_url.as_deref(), Some("https://api.example.com/v1"));
     }
 }

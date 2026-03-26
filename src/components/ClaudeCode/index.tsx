@@ -13,6 +13,7 @@ import {
   ClaudeReferenceDocs,
 } from '../../lib/tauri';
 import { ClaudeCodeSubPageType } from '../../App';
+import { showNewTerminalToastIfNeeded } from '../../lib/terminalToast';
 import { InstallActionCard } from '../InstallUI/InstallActionCard';
 import { InstallToolbar } from '../InstallUI/InstallToolbar';
 import { StatusHeaderCard } from '../InstallUI/StatusHeaderCard';
@@ -111,6 +112,7 @@ export function ClaudeCode({ section, onNavigateSection }: ClaudeCodeProps) {
       const result = await action();
       setActionResult(result);
       await loadStatus();
+      showNewTerminalToastIfNeeded('claude', id, result);
     } catch (e) {
       setPageError(String(e));
     } finally {

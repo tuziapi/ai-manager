@@ -1,9 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  Loader2,
-  Route,
-  Upload,
-} from 'lucide-react';
+import { Loader2, Route, Upload } from 'lucide-react';
 import clsx from 'clsx';
 import {
   api,
@@ -14,6 +10,7 @@ import {
   CodexStatus,
 } from '../../lib/tauri';
 import { CodexSubPageType } from '../../App';
+import { showNewTerminalToastIfNeeded } from '../../lib/terminalToast';
 import { InstallActionCard } from '../InstallUI/InstallActionCard';
 import { InstallToolbar } from '../InstallUI/InstallToolbar';
 import { StatusHeaderCard } from '../InstallUI/StatusHeaderCard';
@@ -24,7 +21,7 @@ interface CodexProps {
 }
 
 const installDescriptions: Record<CodexInstallVariant, string> = {
-  openai: '原版 Codex CLI（可配置 gac/tuzi 路线）',
+  openai: '原版 Codex CLI（gac / tuzi / 自定义线路，自定义需填写线路名与 BASE_URL）',
   gac: 'gac 改版 Codex CLI（无需写入 route 配置）',
 };
 
@@ -37,7 +34,9 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
   const [actionResult, setActionResult] = useState<CodexActionResult | null>(null);
   const [runningAction, setRunningAction] = useState<string | null>(null);
 
-  const [installRoute, setInstallRoute] = useState<'gac' | 'tuzi'>('gac');
+  const [installRoute, setInstallRoute] = useState<'gac' | 'tuzi' | 'custom'>('gac');
+  const [installCustomRouteName, setInstallCustomRouteName] = useState('');
+  const [installCustomBaseUrl, setInstallCustomBaseUrl] = useState('');
   const [installApiKey, setInstallApiKey] = useState('');
   const [installModel, setInstallModel] = useState('gpt-5.4');
   const [installReasoning, setInstallReasoning] = useState('medium');
@@ -45,6 +44,12 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
   const [routeSwitchInputs, setRouteSwitchInputs] = useState<Record<string, string>>({});
   const [routeModelInputs, setRouteModelInputs] = useState<Record<string, string>>({});
   const [routeReasoningInputs, setRouteReasoningInputs] = useState<Record<string, string>>({});
+
+  const [newCodexRouteName, setNewCodexRouteName] = useState('');
+  const [newCodexBaseUrl, setNewCodexBaseUrl] = useState('');
+  const [newCodexApiKey, setNewCodexApiKey] = useState('');
+  const [newCodexModel, setNewCodexModel] = useState('gpt-5.4');
+  const [newCodexReasoning, setNewCodexReasoning] = useState('medium');
 
   const loadStatus = async () => {
     try {
@@ -121,6 +126,7 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
       const result = await action();
       setActionResult(result);
       await loadStatus();
+      showNewTerminalToastIfNeeded('codex', id, result);
     } catch (e) {
       setPageError(String(e));
     } finally {
@@ -128,15 +134,49 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
     }
   };
 
-  const openaiRouteEditable = status?.install_type === 'openai';
+  /** 仅 gac 改版禁用；openai / unknown 均允许（unknown 常见于已装 CLI 但未写入 install_state 的原版环境） */
+  const openaiRouteEditable = status?.install_type !== 'gac';
+
+  const resolveOpenaiInstallParams = (): { route: string; routeBaseUrl?: string } | null => {
+    if (installRoute === 'custom') {
+      const name = installCustomRouteName.trim().toLowerCase();
+      const baseUrl = installCustomBaseUrl.trim();
+      if (!name) {
+        setPageError('自定义线路请填写线路名称（英文标识，如 my-api）');
+        return null;
+      }
+      if (name === 'gac' || name === 'tuzi') {
+        setPageError('线路名不能使用 gac 或 tuzi，请改用内置选项');
+        return null;
+      }
+      if (!baseUrl) {
+        setPageError('自定义线路请填写 BASE_URL（兼容 OpenAI Responses 的 API 根地址，通常含 /v1）');
+        return null;
+      }
+      return { route: name, routeBaseUrl: baseUrl };
+    }
+    return { route: installRoute };
+  };
 
   const handleInstallOpenai = () => {
     if (!installApiKey.trim()) {
       setPageError('安装原版 Codex 并配置路线时，需要输入 CODEX_API_KEY');
+      setTimeout(() => {
+        document.getElementById('codex-action-feedback')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 0);
       return;
     }
+    const resolved = resolveOpenaiInstallParams();
+    if (!resolved) return;
     void runAction('install-openai', () =>
-      api.installCodex('openai', installRoute, installApiKey.trim(), installModel.trim(), installReasoning.trim())
+      api.installCodex(
+        'openai',
+        resolved.route,
+        installApiKey.trim(),
+        installModel.trim(),
+        installReasoning.trim(),
+        resolved.routeBaseUrl
+      )
     );
   };
 
@@ -168,6 +208,31 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
     );
   };
 
+  const handleAddCodexRoute = () => {
+    const name = newCodexRouteName.trim().toLowerCase();
+    const baseUrl = newCodexBaseUrl.trim();
+    const apiKey = newCodexApiKey.trim();
+    if (!name || !baseUrl || !apiKey) {
+      setPageError('新增自定义线路需填写线路名、Base URL 和 CODEX_API_KEY');
+      return;
+    }
+    void runAction('codex-route-add', () =>
+      api.addCodexRoute(
+        name,
+        baseUrl,
+        apiKey,
+        newCodexModel.trim() || undefined,
+        newCodexReasoning.trim() || undefined
+      )
+    ).then(() => {
+      setNewCodexRouteName('');
+      setNewCodexBaseUrl('');
+      setNewCodexApiKey('');
+      setNewCodexModel('gpt-5.4');
+      setNewCodexReasoning('medium');
+    });
+  };
+
   if (loadingStatus) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -184,14 +249,17 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
       <div className="max-w-6xl space-y-6">
         <StatusHeaderCard
           title="Codex 管理器"
-          description="对齐 install_codex.sh：安装、升级、路线切换、重装与 FAQ。"
+          description="通过 npm 安装 Codex CLI，并写入 ~/.codex 与 shell 环境变量。"
           chips={statusChips}
           onRefresh={() => void loadStatus()}
           refreshing={!!runningAction}
         />
 
         {pageError && (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <div
+            id="codex-action-feedback"
+            className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+          >
             {pageError}
           </div>
         )}
@@ -235,7 +303,9 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
                 <p>当前路线: {status?.current_route || '--'}</p>
                 <p>状态文件: {status?.state_file_exists ? '存在' : '不存在'}</p>
                 <p>配置文件: {status?.config_file_exists ? '存在' : '不存在'}</p>
-                <p>CODEX_API_KEY: {status?.env_summary.codex_api_key_masked || '未读取到'}</p>
+                <p>
+                  CODEX_API_KEY / CODEX_KEY: {status?.env_summary.codex_api_key_masked || '未读取到'}
+                </p>
               </div>
             </div>
             <div className="bg-dark-700 rounded-2xl p-6 border border-dark-500">
@@ -265,7 +335,7 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
         {section === 'install' && (
           <div className="space-y-4">
             <div className="bg-dark-700 rounded-2xl p-6 border border-dark-500">
-              <h4 className="text-white font-medium mb-3">安装方案</h4>
+              <h4 className="text-white font-medium mb-3">安装（npm）</h4>
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 <InstallActionCard
                   title="原版 Codex"
@@ -274,7 +344,7 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
                   disabled={!!runningAction}
                   loading={runningAction === 'install-openai'}
                 >
-                  <div className="segmented-control">
+                  <div className="segmented-control flex flex-wrap gap-1" role="group" aria-label="线路类型">
                     <button
                       type="button"
                       onClick={() => setInstallRoute('gac')}
@@ -289,7 +359,30 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
                     >
                       tuzi 路线
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setInstallRoute('custom')}
+                      className={clsx('segmented-item', installRoute === 'custom' && 'active')}
+                    >
+                      自定义线路
+                    </button>
                   </div>
+                  {installRoute === 'custom' && (
+                    <>
+                      <input
+                        value={installCustomRouteName}
+                        onChange={(e) => setInstallCustomRouteName(e.target.value)}
+                        placeholder="线路名称（英文标识，如 my-corp）"
+                        className="input-base"
+                      />
+                      <input
+                        value={installCustomBaseUrl}
+                        onChange={(e) => setInstallCustomBaseUrl(e.target.value)}
+                        placeholder="BASE_URL（必填，例如 https://api.example.com/v1）"
+                        className="input-base"
+                      />
+                    </>
+                  )}
                   <input
                     type="password"
                     value={installApiKey}
@@ -351,18 +444,26 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
                 卸载（清理配置）
               </button>
               <button
-                onClick={() =>
+                type="button"
+                onClick={() => {
+                  if (!installApiKey.trim()) {
+                    setPageError('重装原版需填写 CODEX_API_KEY');
+                    return;
+                  }
+                  const resolved = resolveOpenaiInstallParams();
+                  if (!resolved) return;
                   void runAction('reinstall-openai', () =>
                     api.reinstallCodex(
                       'openai',
-                      installRoute,
+                      resolved.route,
                       installApiKey.trim(),
                       installModel.trim(),
                       installReasoning.trim(),
+                      resolved.routeBaseUrl,
                       false
                     )
-                  )
-                }
+                  );
+                }}
                 disabled={!!runningAction}
                 className="px-4 py-2 rounded-lg bg-dark-500 hover:bg-dark-400 text-sm text-gray-200 disabled:opacity-50"
               >
@@ -376,12 +477,15 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
           <div className="space-y-4">
             {!openaiRouteEditable && (
               <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
-                当前安装类型不是 openai。路线切换与模型设置仅对原版 Codex 可用。
+                当前为 gac 改版安装，路线切换、模型设置与自定义线路均不可用。需要路线管理时请使用原版 Codex。
               </div>
             )}
 
             <div className="bg-dark-700 rounded-2xl p-6 border border-dark-500">
               <h4 className="text-white font-medium mb-3">路线与模型</h4>
+              <p className="text-xs text-gray-400 mb-4">
+                内置 gac / tuzi 与配置文件中的线路会一并列出；切换线路会保留各线路的 model 配置。自定义线路名仅允许小写字母、数字、连字符与下划线，且不可与 gac、tuzi 重名。
+              </p>
               {status?.routes.length ? (
                 <div className="space-y-3">
                   {status.routes.map((route) => (
@@ -451,6 +555,61 @@ export function Codex({ section, onNavigateSection }: CodexProps) {
               ) : (
                 <p className="text-sm text-gray-400">暂无路线配置。</p>
               )}
+            </div>
+
+            <div className="bg-dark-700 rounded-2xl p-6 border border-dark-500">
+              <h4 className="text-white font-medium mb-3">新增自定义线路</h4>
+              <p className="text-xs text-gray-400 mb-3">
+                Base URL 需指向兼容 OpenAI Responses 的 API 根地址（与 gac/tuzi 类似，通常带 <code className="text-gray-300">/v1</code>）。
+              </p>
+              <div className="grid grid-cols-1 gap-3">
+                <input
+                  value={newCodexRouteName}
+                  onChange={(e) => setNewCodexRouteName(e.target.value)}
+                  className="input-base"
+                  placeholder="线路名称（例如 my-corp，勿用 gac / tuzi）"
+                  disabled={!openaiRouteEditable || !!runningAction}
+                />
+                <input
+                  value={newCodexBaseUrl}
+                  onChange={(e) => setNewCodexBaseUrl(e.target.value)}
+                  className="input-base"
+                  placeholder="Base URL（例如 https://api.example.com/v1）"
+                  disabled={!openaiRouteEditable || !!runningAction}
+                />
+                <input
+                  type="password"
+                  value={newCodexApiKey}
+                  onChange={(e) => setNewCodexApiKey(e.target.value)}
+                  className="input-base"
+                  placeholder="CODEX_API_KEY"
+                  disabled={!openaiRouteEditable || !!runningAction}
+                />
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+                  <input
+                    value={newCodexModel}
+                    onChange={(e) => setNewCodexModel(e.target.value)}
+                    className="input-base text-sm"
+                    placeholder="model（默认 gpt-5.4）"
+                    disabled={!openaiRouteEditable || !!runningAction}
+                  />
+                  <input
+                    value={newCodexReasoning}
+                    onChange={(e) => setNewCodexReasoning(e.target.value)}
+                    className="input-base text-sm"
+                    placeholder="reasoning（默认 medium）"
+                    disabled={!openaiRouteEditable || !!runningAction}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddCodexRoute}
+                  disabled={!openaiRouteEditable || !!runningAction}
+                  className="btn-primary text-sm px-4 py-2 w-fit disabled:opacity-50"
+                >
+                  添加并切换到该线路
+                </button>
+              </div>
             </div>
           </div>
         )}

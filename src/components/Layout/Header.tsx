@@ -38,7 +38,7 @@ const claudecodePageTitles: Record<ClaudeCodeSubPageType, { title: string; descr
 const codexPageTitles: Record<CodexSubPageType, { title: string; description: string }> = {
   overview: { title: 'Codex / 概览', description: '查看安装状态、安装类型、路线与环境变量摘要' },
   install: { title: 'Codex / 安装与升级', description: '执行原版/改版安装、升级、卸载与重装' },
-  routes: { title: 'Codex / 路线管理', description: '切换 gac/tuzi 路线并管理 model/reasoning 参数' },
+  routes: { title: 'Codex / 路线管理', description: '切换 gac/tuzi/自定义线路并管理 model 与 reasoning' },
   faq: { title: 'Codex / FAQ', description: '读取 install_codex.sh 原文并查看更新时间' },
 };
 
